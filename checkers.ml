@@ -17,21 +17,21 @@ let destinationColor : GDraw.color = (`NAME "green");;
 let pieceWidth : float = 0.8;;
 
 (* A square can contain a white piece, black piece, or neither,
-   can be selected, or can be the destination of a possible move. *)
+   and has a click function. *)
 type squareContent = White | Black | Neither;;
 type square = { content : squareContent;
-                selected : bool;
-                possible_move : bool;
                 click_fn : int -> unit};;
+
+(* The other side. *)
+let swap_side (side : squareContent) : squareContent =
+  if (side == Black) then White else Black
 
 (* Null click function: for squares that aren't doing anything. *)
 let null_click _ = ()
 
 (* The board. *)
-let board:square array = Array.make boardSize
-    {content = Neither; selected = false;
-     possible_move = false; click_fn = null_click};;
-let selectedSquare : int ref = ref (-1);;
+let board : square array = Array.make boardSize
+    {content = Neither; click_fn = null_click};;
 
 (* Flip the index if playing down the board. *)
 let flip_index (index : int) : int =
@@ -48,16 +48,15 @@ let index_to_xy (index : int) : (int * int) = (index mod numColumns, index / num
 
 (* Initialize the pieces on the board. *)
 let init_pieces () : unit =
-  selectedSquare := -1;
+  let rowsPerSide = (numRows / 2) - 1 in
   for index = 0 to (boardSize - 1) do
     let (x, y) = index_to_xy index in
     if ((index + (y mod 2)) mod 2 != 0) then
       let setfn = Array.set board index in
-      let s = {content = Neither; selected = false;
-               possible_move = false; click_fn = null_click} in
-      if y < 3 then
+      let s = {content = Neither; click_fn = null_click} in
+      if y < rowsPerSide then
         setfn {s with content = White}
-      else if y >= numRows - 3 then
+      else if y >= numRows - rowsPerSide then
         setfn {s with content = Black}
       else
         setfn s
@@ -110,72 +109,93 @@ let is_valid_jump (src : int) (dest : int) : bool =
   ((srcContent = White && captureContent = Black) ||
   (srcContent = Black && captureContent = White))
 
+(* Is a move a jump? *)
+let is_jump (src : int) (dest : int) : bool = abs(src - dest) > numColumns + 1
+
+(* Produce a list from i..j *)
+let rec range (i : int) (j : int) : int list =
+  if i >= j then [] else i :: (range (i+1) j)
+
+(* Collect the valid moves for a given side. *)
+let collect_moves
+    (side : squareContent)
+    (table : (int, int list) Hashtbl.t)
+    (valid_fn : int -> int -> bool)
+    (l : (int * int) list)
+    (index, square) : (int * int) list =
+  if (square.content != side) then l else
+  let flipfn = if (side = White) then identity else flip_index in
+  let flipped_moves = List.map flipfn (Hashtbl.find table (flipfn index)) in
+  let possible_moves = (List.filter (valid_fn index) flipped_moves) in
+  let m = List.map (fun x -> (index, x)) possible_moves in
+  List.append l m
+
+(* Find all valid moves for a side. Jumps only if any jumps exist. *)
+let find_valid_moves (side : squareContent) : (int * int) list =
+  (* First, zip the array with indices into a list. *)
+  let squares = List.combine (range 0 boardSize) (Array.to_list board) in
+  (* Now find the squares that have valid jumps for this side, if any. *)
+  let jumpSquares = List.fold_left (collect_moves side jumps is_valid_jump) [] squares in
+  if (jumpSquares != []) then jumpSquares
+  else List.fold_left (collect_moves side moves is_valid_move) [] squares
+
+(* Find valid jumps for a piece. *)
+let find_valid_jumps (src : int) (flipfn : int -> int) : int list =
+  let possible_jumps = Hashtbl.find jumps (flipfn src) in
+  let flipped_jumps = List.map flipfn possible_jumps in
+  List.filter (is_valid_jump src) flipped_jumps
+
 (* Board dimensions : x origin, yorigin, square width, square height. *)
-let board_dimensions backing : (int * int * int * int) =
+let board_dimensions (backing : GDraw.pixmap ref) : (int * int * int * int) =
   let (w, h) = !backing#size in
   let (xorg, yorg) = ((w mod numColumns) / 2, (h mod numRows) / 2) in
   let (squareWidth, squareHeight) = (w / numColumns, h / numRows) in
   (xorg, yorg, squareWidth, squareHeight)
 
 (* Convert window (x,y) to board square (row,col). *)
-let window_coord_to_board_coord backing (x : int) (y : int) : (int * int) =
+let window_coord_to_board_coord
+    (backing : GDraw.pixmap ref) (x : int) (y : int) : (int * int) =
   let (xorg, yorg, squareWidth, squareHeight) = board_dimensions backing in
   let (boardx, boardy) = ((x-xorg) / squareWidth, (y-yorg) / squareHeight) in
   ((max 0 (min (numColumns-1) boardx)), (max 0 (min (numRows-1) boardy)))
 
 (* (x,y,w,h) of the window coordinates for a square *)
-let window_coords backing (index : int) : (int * int * int * int) =
+let window_coords
+    (backing : GDraw.pixmap ref) (index : int) : (int * int * int * int) =
   let (xorg, yorg, squareWidth, squareHeight) = board_dimensions backing in
   let (boardx, boardy) = index_to_xy index in
   let (x, y) = (xorg + squareWidth * boardx, yorg + squareHeight * boardy) in
   (x, y, squareWidth, squareHeight)
 
-(* Redraw the screen from the backing pixmap. *)
-let expose (drawing_area:GMisc.drawing_area) (backing:GDraw.pixmap ref) ev : bool =
-  let area = GdkEvent.Expose.area ev in
-  let (x, y) = (Gdk.Rectangle.x area, Gdk.Rectangle.y area) in
-  let (w, h) = (Gdk.Rectangle.width area, Gdk.Rectangle.height area) in
-  let drawing =
-    drawing_area#misc#realize ();
-    new GDraw.drawable (drawing_area#misc#window)
-  in
-  drawing#put_pixmap ~x ~y ~xsrc:x ~ysrc:y ~width:w ~height:h !backing#pixmap;
-  false
-
 (* Draw a highlight rectangle. *)
-let draw_highlight (backing:GDraw.pixmap ref)
-    (x : int) (y : int) (w : int) (h : int) c : unit =
+let draw_highlight (backing : GDraw.pixmap ref)
+    (x : int) (y : int) (w : int) (h : int)
+    (c : GDraw.color) : unit =
   !backing#set_line_attributes ~width:4 ();
   !backing#set_foreground c;
   !backing#rectangle ~x:(x+2) ~y:(y+2)
     ~width:(w-4) ~height:(h-4) ~filled:false ()
 
 (* Highlight a square by index. *)
-let highlight_square (area:GMisc.drawing_area) (backing:GDraw.pixmap ref) c (index : int) =
+let highlight_square (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (c : GDraw.color) (index : int) =
   let (x, y, w, h) = window_coords backing index in
   draw_highlight backing x y w h c;
   let update_rect = Gdk.Rectangle.create x y w h in
   area#misc#draw (Some update_rect)
 
 (* Draw a square and its piece, if any. *)
-let draw_square (area:GMisc.drawing_area) (backing:GDraw.pixmap ref) (index:int) : unit =
+let draw_square (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (index : int) : unit =
   let (x, y, squareWidth, squareHeight) = window_coords backing index in
   let (boardx, boardy) = index_to_xy index in
 
   (* white/black squares *)
-  if (((boardy * numColumns + boardx) + (boardy mod 2)) mod 2 != 0) then
+  if ((index + (boardy mod 2)) mod 2 != 0) then
     !backing#set_foreground darkSquareColor
   else
     !backing#set_foreground lightSquareColor;
   !backing#rectangle ~x ~y ~width:squareWidth ~height:squareHeight ~filled:true ();
-
-  (* selected? *)
-  if ((Array.get board index).selected) then
-    draw_highlight backing x y squareWidth squareHeight selectedColor;
-
-  (* possible move? *)
-  if ((Array.get board index).possible_move) then
-    draw_highlight backing x y squareWidth squareHeight destinationColor;
 
   (* piece on the square *)
   if ((Array.get board index).content != Neither) then (
@@ -194,13 +214,145 @@ let draw_square (area:GMisc.drawing_area) (backing:GDraw.pixmap ref) (index:int)
   area#misc#draw (Some update_rect)
 
 (* Draw the board *)
-let draw_board (area:GMisc.drawing_area) (backing:GDraw.pixmap ref) : unit =
-  for i = 0 to (numRows * numColumns - 1) do
+let draw_board (area : GMisc.drawing_area) (backing : GDraw.pixmap ref) : unit =
+  for i = 0 to (boardSize - 1) do
     draw_square area backing i
   done;;
 
+(* Move a piece from src to destination. Capture if necessary.
+   Return a list of squares to be redrawn. *)
+let move_piece (src : int) (dest : int) : int list =
+  Array.set board dest (Array.get board src);
+  Array.set board src {(Array.get board src) with content=Neither};
+  if (is_jump src dest) then (
+    let capture = (src + dest) / 2 in
+    Array.set board capture {(Array.get board capture) with content=Neither};
+    [src; capture; dest])
+  else
+    [src; dest]
+
+(* Mark a square as a destination. *)
+let rec mark_destination (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (m : (int * int) list)
+    (select : bool) (src : int) (dest : int) : unit =
+  let fn = if select then (move_click area backing m src) else null_click in
+  let s = (Array.get board dest) in
+  Array.set board dest {s with click_fn = fn};
+  highlight_square area backing
+    (if select then destinationColor else darkSquareColor) dest
+
+(* Set a square's click function. *)
+and set_click_fn (fn : int -> unit) (index : int) : unit =
+  let s = Array.get board index in
+  Array.set board index {s with click_fn = fn}
+
+(* Move click function: for squares that are move destinations. *)
+and move_click
+    (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (valid_moves : (int * int) list)
+    (src : int) (dest : int) : unit =
+  let indices = fst (List.split valid_moves) in
+  (* Unselect the squares (one of them is the last one we clicked) *)
+  ignore (List.map (select_square area backing valid_moves false) indices);
+  ignore (List.map (set_click_fn null_click) indices);
+
+  (* Move to the destination and draw *)
+  let redraws = move_piece src dest in
+  ignore (List.map (draw_square area backing) redraws);
+
+  (* If this was a jump, can the same piece jump again?
+     If so, select it. Otherwise, set up the next side's moves. *)
+  let side = (Array.get board dest).content in
+  let flipfn = if (side = White) then identity else flip_index in
+  let valid_jumps = if (is_jump src dest) then
+    List.map (fun x -> (dest, x)) (find_valid_jumps dest flipfn) else [] in
+  if (valid_jumps != []) then
+    select_square area backing valid_jumps true dest
+  else
+    setup_moves area backing (swap_side side)
+
+(* Mark a square as selected, and highlight the possible moves from it. *)
+and select_square (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (m : (int * int) list)
+    (select : bool) (index : int) : unit =
+  (* Mark the square *)
+  highlight_square area backing
+    (if select then selectedColor else darkSquareColor) index;
+
+  (* We will flip the board if necessary. *)
+  let s = Array.get board index in
+  let flipfn = if (s.content = White) then identity else flip_index in
+  (* Mark the destinations. First, check any jumps, then moves. *)
+  let possible_jumps = Hashtbl.find jumps (flipfn index) in
+  let flipped_jumps = List.map flipfn possible_jumps in
+  let valid_jumps = List.filter (is_valid_jump index) flipped_jumps in
+  ignore (if (valid_jumps = []) then
+    let possible_moves = Hashtbl.find moves (flipfn index) in
+    let flipped_moves = List.map flipfn possible_moves in
+    let valid_moves = List.filter (is_valid_move index) flipped_moves in
+    List.map (mark_destination area backing m select index) valid_moves
+  else
+    List.map (mark_destination area backing m select index) valid_jumps)
+
+(* Select click function: for squares that are selectable. *)
+and select_click
+    (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (valid_moves : (int * int) list) (index : int) : unit =
+  let indices = fst (List.split valid_moves) in
+  (* Unselect the squares (one of them is the last one we clicked) *)
+  ignore (List.map (select_square area backing valid_moves false) indices);
+  (* Re-highlight the squares (they are still selectable) *)
+  ignore (List.map (highlight_square area backing selectableColor) indices);
+  (* Select the clicked one *)
+  select_square area backing valid_moves true index
+
+(* Find valid moves, highlight the selectable squares, set up the click functions. *)
+and setup_moves
+    (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (side : squareContent) : unit =
+  let valid_moves = find_valid_moves side in
+  let indices = fst (List.split valid_moves) in
+  ignore (List.map (highlight_square area backing selectableColor) indices);
+  ignore (List.map (set_click_fn (select_click area backing valid_moves)) indices)
+
+(* Reset the game state. *)
+let new_game (area : GMisc.drawing_area) (backing : GDraw.pixmap ref) () : unit =
+  init_pieces ();
+  draw_board area backing;
+  setup_moves area backing Black
+
+(* On button click. *)
+let button_pressed
+    (area:GMisc.drawing_area) (backing:GDraw.pixmap ref)
+    (ev : GdkEvent.Button.t) : bool =
+  if GdkEvent.Button.button ev = 1 then (
+    let x = int_of_float (GdkEvent.Button.x ev) in
+    let y = int_of_float (GdkEvent.Button.y ev) in
+    let (u, v) = window_coord_to_board_coord backing x y in
+    let index = (v * numColumns + u) in
+    let s = Array.get board index in
+    s.click_fn index);
+  false
+
+(* Redraw the screen from the backing pixmap. *)
+let expose
+    (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (ev : GdkEvent.Expose.t) : bool =
+  let expose_area = GdkEvent.Expose.area ev in
+  let (x, y) = (Gdk.Rectangle.x expose_area, Gdk.Rectangle.y expose_area) in
+  let (w, h) = (Gdk.Rectangle.width expose_area, Gdk.Rectangle.height expose_area) in
+  let drawing =
+    area#misc#realize ();
+    new GDraw.drawable (area#misc#window)
+  in
+  drawing#put_pixmap ~x ~y ~xsrc:x ~ysrc:y ~width:w ~height:h !backing#pixmap;
+  false
+
 (* Create a new backing pixmap of the appropriate size *)
-let configure window area backing ev =
+let configure
+    (window : GWindow.window)
+    (area : GMisc.drawing_area) (backing : GDraw.pixmap ref)
+    (ev : GdkEvent.Configure.t) : bool =
   let width = GdkEvent.Configure.width ev in
   let height = GdkEvent.Configure.height ev in
   let pixmap = GDraw.pixmap ~width ~height ~window () in
@@ -210,141 +362,15 @@ let configure window area backing ev =
   draw_board area backing;
   true
 
-(* Mark a square as a destination. *)
-let mark_destination area backing (select:bool) (index:int) : unit =
-  let s = (Array.get board index) in
-  Array.set board index {s with possible_move = select};
-  draw_square area backing index
-
-(* Mark a square as selected, and highlight the possible moves from it. *)
-let select_square area backing (select:bool) (index:int) : unit =
-  (* Mark the square *)
-  let s = {(Array.get board index) with selected = select} in
-  Array.set board index s;
-  draw_square area backing index;
-
-  (* We will flip the board if necessary. *)
-  let flipfn = if (s.content = White) then identity else flip_index in
-
-  (* Mark the destinations. First, check any jumps, then moves. *)
-  let possible_jumps = Hashtbl.find jumps (flipfn index) in
-  let flipped_jumps = List.map flipfn possible_jumps in
-  let valid_jumps = List.filter (is_valid_jump index) flipped_jumps in
-  if (valid_jumps = []) then
-    let possible_moves = Hashtbl.find moves (flipfn index) in
-    let flipped_moves = List.map flipfn possible_moves in
-    let valid_moves = List.filter (is_valid_move index) flipped_moves in
-    List.map (mark_destination area backing select) valid_moves
-  else
-    List.map (mark_destination area backing select) valid_jumps;
-  ()
-
-(* Move a piece from src to destination. *)
-let move_piece (srcindex : int) (destindex : int) : unit =
-  Array.set board destindex (Array.get board srcindex);
-  Array.set board srcindex {(Array.get board srcindex) with content=Neither}
-
-(* On button click. *)
-let button_pressed (area:GMisc.drawing_area) (backing:GDraw.pixmap ref) ev =
-  if GdkEvent.Button.button ev = 1 then (
-    let x = int_of_float (GdkEvent.Button.x ev) in
-    let y = int_of_float (GdkEvent.Button.y ev) in
-    let (u, v) = window_coord_to_board_coord backing x y in
-
-    let index = (v * numColumns + u) in
-    let s = Array.get board index in
-    s.click_fn index;
-
-    if (s.possible_move) then (
-      select_square area backing false !selectedSquare;
-      move_piece !selectedSquare index;
-      draw_square area backing !selectedSquare;
-      selectedSquare := -1;
-      draw_square area backing index)
-    else
-      if (s.content != Neither) then (
-        if (!selectedSquare != -1) then
-          select_square area backing false !selectedSquare;
-        selectedSquare := index;
-        select_square area backing true !selectedSquare)
-   );
-  false
-
-(* Select click function: for squares that are selectable. *)
-let select_click
-    (area:GMisc.drawing_area) (backing:GDraw.pixmap ref)
-    (valid_moves : (int * int) list) (index : int) : unit =
-  (* Unhighlight the squares *)
-  List.map (draw_square area backing) (fst (List.split valid_moves));
-  (* Select the clicked one *)
-  let s = Array.get board index in
-  if (s.possible_move) then (
-    select_square area backing false !selectedSquare;
-    move_piece !selectedSquare index;
-    draw_square area backing !selectedSquare;
-    selectedSquare := -1;
-    draw_square area backing index)
-  else
-    if (s.content != Neither) then (
-      if (!selectedSquare != -1) then
-        select_square area backing false !selectedSquare;
-      selectedSquare := index;
-      select_square area backing true !selectedSquare)
-
-(* Produce a list from i..j *)
-let rec range i j = if i >= j then [] else i :: (range (i+1) j)
-
-(* Collect the valid moves for a given side. *)
-let collect_moves
-    (side : squareContent)
-    (table : (int, int list) Hashtbl.t)
-    (valid_fn : int -> int -> bool)
-    (l : (int * int) list)
-    (index, square) : (int * int) list =
-  if (square.content != side) then l else
-  let flipfn = if (side = White) then identity else flip_index in
-  let flipped_moves = List.map flipfn (Hashtbl.find table (flipfn index)) in
-  let possible_moves = (List.filter (valid_fn index) flipped_moves) in
-  let m = List.map (fun x -> (index, x)) possible_moves in
-  List.append l m
-
-let find_valid_moves (side : squareContent) : (int * int) list =
-  (* First, zip the array with indices into a list. *)
-  let squares = List.combine (range 0 boardSize) (Array.to_list board) in
-  (* Now find the squares that have valid jumps for this side, if any. *)
-  let jumpSquares = List.fold_left (collect_moves side jumps is_valid_jump) [] squares in
-  if (jumpSquares != []) then jumpSquares
-  else List.fold_left (collect_moves side moves is_valid_move) [] squares
-
-(* Make a square selectable: set its click function. *)
-let make_selectable
-    (area:GMisc.drawing_area) (backing:GDraw.pixmap ref)
-    (valid_moves : (int * int) list) (index : int) : unit =
-  let s = Array.get board index in
-  Array.set board index {s with click_fn = (select_click area backing valid_moves)}
-
-(* Find valid moves, highlight the selectable squares, set up the click functions. *)
-let setup_moves
-    (area:GMisc.drawing_area) (backing:GDraw.pixmap ref)
-    (side : squareContent) : unit =
-  let valid_moves = find_valid_moves side in
-  let indices = fst (List.split valid_moves) in
-  ignore (List.map (highlight_square area backing selectableColor) indices);
-  ignore (List.map (make_selectable area backing valid_moves) indices)
-
-(* Reset the game state. *)
-let new_game (area:GMisc.drawing_area) (backing:GDraw.pixmap ref) () : unit =
-  init_pieces ();
-  draw_board area backing
-
-let main () =
+(* Finally, the main function. *)
+let main () : unit =
   (* Create a new window; set title and border width *)
   let window = GWindow.window
       ~title:"Checkers"
       ~border_width:20 () in
 
   (* Set a handler for destroy event that immediately exits GTK. *)
-  window#connect#destroy ~callback:GMain.Main.quit;
+  ignore (window#connect#destroy ~callback:GMain.Main.quit);
 
   (* Board is square: set aspect ratio hint *)
   window#set_geometry_hints ~aspect:(1.0, 1.0) window#coerce;
@@ -368,24 +394,21 @@ let main () =
   let backing = ref (GDraw.pixmap ~width:drawWidth ~height:drawHeight ()) in
 
   (* Connect signals. *)
-  da#event#connect#button_press ~callback:(button_pressed da backing);
-  da#event#connect#expose ~callback:(expose da backing);
-  da#event#connect#configure ~callback:(configure window da backing);
+  ignore (da#event#connect#button_press ~callback:(button_pressed da backing));
+  ignore (da#event#connect#expose ~callback:(expose da backing));
+  ignore (da#event#connect#configure ~callback:(configure window da backing));
   da#event#add [`BUTTON_PRESS;
                 `EXPOSURE];
 
   (* File menu *)
   let factory = new GMenu.factory file_menu ~accel_group in
-  factory#add_item "New Game" ~key:GdkKeysyms._N ~callback: (new_game da backing);
-  factory#add_item "Quit" ~key:GdkKeysyms._Q ~callback: GMain.Main.quit;
+  ignore (factory#add_item "New Game" ~key:GdkKeysyms._N ~callback: (new_game da backing));
+  ignore (factory#add_item "Quit" ~key:GdkKeysyms._Q ~callback: GMain.Main.quit);
 
   (* Start the game, show the window, go. *)
-  new_game da backing ();
   window#add_accel_group accel_group;
   window#show ();
-
-  setup_moves da backing Black;
-
+  new_game da backing ();
   GMain.Main.main ()
 
 let _ = Printexc.print main ()
