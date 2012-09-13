@@ -33,18 +33,17 @@ let null_click _ = ()
 let board : square array = Array.make boardSize
     {content = Neither; click_fn = null_click};;
 
+(* Board index to (x,y) coordinate. *)
+let index_to_xy (index : int) : (int * int) = (index mod numColumns, index / numColumns)
+
 (* Flip the index if playing down the board. *)
 let flip_index (index : int) : int =
-  let boardx = index mod numColumns in
-  let boardy = index / numRows in
-  let y = numRows - boardy - 1 in
-  (y * numColumns + boardx)
+  let (x, y) = index_to_xy index in
+  let flipped_y = numRows - y - 1 in
+  (flipped_y * numColumns + x)
 
 (* And don't flip it otherwise. *)
 let identity (x : 'a) : 'a = x
-
-(* Board index to (x,y) coordinate. *)
-let index_to_xy (index : int) : (int * int) = (index mod numColumns, index / numColumns)
 
 (* Initialize the pieces on the board. *)
 let init_pieces () : unit =
