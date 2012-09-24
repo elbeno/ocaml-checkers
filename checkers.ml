@@ -94,22 +94,37 @@ let draw_board
   done;;
 
 (* Hash table of square index to click function. *)
-let click_fns : (int, unit -> unit) Hashtbl.t = Hashtbl.create boardSize;;
+let click_fns : (int, int -> unit) Hashtbl.t = Hashtbl.create boardSize;;
 
-let set_click_fn (fn : unit -> unit) (index : int) : unit =
+let set_click_fn (fn : int -> unit) (index : int) : unit =
   Hashtbl.replace click_fns index fn
 
 let clear_click_fn (index : int) : unit =
   Hashtbl.remove click_fns index
 
-(* Click on a destination square. *)
-let rec move_click
+(* Setup moves given a source and dests. *)
+let rec setup_moves
     (area : GMisc.drawing_area)
     (backing : GDraw.pixmap ref)
     (board : board_t ref)
     (highlightedSquares : int list)
     (src : int)
-    (dest : int) () : unit =
+    (dests : int list) : unit =
+  (* highlight clicked square and dests *)
+  highlight_square area backing selectedColor src;
+  ignore (List.map (highlight_square area backing destinationColor) dests);
+  (* set click functions for dests *)
+  ignore (List.map (set_click_fn (move_click area backing board highlightedSquares src))
+            dests)
+
+(* Click on a destination square. *)
+and move_click
+    (area : GMisc.drawing_area)
+    (backing : GDraw.pixmap ref)
+    (board : board_t ref)
+    (highlightedSquares : int list)
+    (src : int)
+    (dest : int) : unit =
   (* unhighlight highlighted squares *)
   ignore (List.map (highlight_square area backing darkSquareColor) highlightedSquares);
   (* move piece from src to dest *)
@@ -120,16 +135,9 @@ let rec move_click
   ignore (List.map clear_click_fn (List.append highlightedSquares changedSquares));
   (* if multi-jump, do that, else find new selectable squares for the other side *)
   let multijumps = if (is_jump src dest) then (find_jumps !board dest) else [] in
-  if (multijumps != []) then (
+  if (multijumps != []) then
     let newHighlightedSquares = dest :: multijumps in
-    (* highlight clicked square and dests *)
-    highlight_square area backing selectedColor dest;
-    ignore (List.map (highlight_square area backing destinationColor) multijumps);
-    (* set click functions for dests *)
-    ignore (List.map
-              (fun x -> set_click_fn
-                  (move_click area backing board newHighlightedSquares dest x) x)
-              multijumps))
+    setup_moves area backing board newHighlightedSquares dest multijumps
   else
     highlight_selectable_squares area backing board (swap_side (piece_color !board dest))
 
@@ -139,7 +147,7 @@ and select_click
     (backing : GDraw.pixmap ref)
     (board : board_t ref)
     (highlightedSquares : int list)
-    (index : int) () : unit =
+    (index : int) : unit =
   (* unhighlight highlighted squares *)
   ignore (List.map (highlight_square area backing darkSquareColor) highlightedSquares);
   (* find destinations and selectable squares *)
@@ -149,16 +157,9 @@ and select_click
   (* highlight selectable squares and reset their click functions *)
   ignore (List.map (highlight_square area backing selectableColor) selectable_squares);
   let newHighlightedSquares = List.append selectable_squares dests in
-  ignore (List.map
-            (fun x -> set_click_fn (select_click area backing board newHighlightedSquares x) x)
+  ignore (List.map (set_click_fn (select_click area backing board newHighlightedSquares))
             selectable_squares);
-  (* highlight clicked square and dests *)
-  highlight_square area backing selectedColor index;
-  ignore (List.map (highlight_square area backing destinationColor) dests);
-  (* set click functions for dests *)
-  ignore (List.map
-            (fun x -> set_click_fn (move_click area backing board newHighlightedSquares index x) x)
-            dests)
+  setup_moves area backing board newHighlightedSquares index dests
 
 (* Highlight the selectable squares. *)
 and highlight_selectable_squares
@@ -170,8 +171,7 @@ and highlight_selectable_squares
   let selectable_squares = find_selectable_squares !board side in
   ignore (List.map (highlight_square area backing selectableColor) selectable_squares);
   (* set the click functions *)
-  ignore (List.map
-            (fun x -> set_click_fn (select_click area backing board selectable_squares x) x)
+  ignore (List.map (set_click_fn (select_click area backing board selectable_squares))
             selectable_squares)
 
 (* On button click. *)
@@ -186,8 +186,8 @@ let button_pressed
     let fn =
       try
         Hashtbl.find click_fns index
-      with Not_found -> (fun () -> ()) in
-    fn ());
+      with Not_found -> (fun _ -> ()) in
+    fn index);
   false
 
 (* Redraw the screen from the backing pixmap. *)
