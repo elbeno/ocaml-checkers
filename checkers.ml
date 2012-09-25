@@ -216,6 +216,7 @@ let configure
   pixmap#rectangle ~x:0 ~y:0 ~width ~height ~filled:true ();
   backing := pixmap;
   draw_board area backing board;
+  (* todo: the board click state is lost here *)
   true
 
 (* Reset the game state. *)

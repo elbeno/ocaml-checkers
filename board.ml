@@ -125,7 +125,7 @@ let is_valid_jump (board : board_t) (src : int) (dest : int) : bool =
   src_side != capture_side)
 
 (* Get the possible valid destination squares for a move or jump. *)
-let find_destination_squares
+let find_destinations_for_move
     (flip : int -> int)
     (move_table : (int, int list) Hashtbl.t)
     (valid_fn : int -> int -> bool)
@@ -133,32 +133,33 @@ let find_destination_squares
   let flipped_moves = List.map flip (Hashtbl.find move_table (flip index)) in
   List.filter (valid_fn index) flipped_moves
 
-(* Accumulate indices which are valid selectable squares (ie. are sources of allowed moves). *)
-let collect_selectable_squares
-    (flip : int -> int)
-    (move_table : (int, int list) Hashtbl.t)
-    (valid_fn : int -> int -> bool)
-    (l : int list)
-    (index : int) : int list =
-  let dests = find_destination_squares flip move_table valid_fn index in
-  if (dests = []) then l else index :: l
-
-(* Find all valid selectable squares (ie. sources of allowed moves for a side).
-   Jumps only if any jumps exist. *)
-let find_selectable_squares (board : board_t) (side : side_t) : int list =
-  let ps = pieces board side in
-  let jumpSquares = List.fold_left (collect_selectable_squares (flipfn side) jumps
-                                      (is_valid_jump board)) [] ps in
-  if (jumpSquares != []) then jumpSquares
-  else List.fold_left (collect_selectable_squares (flipfn side) moves
-                         (is_valid_move board)) [] ps
-
 (* Find valid jumps for a piece. *)
 let find_jumps
     (board : board_t)
     (src : int) : int list =
   let side = piece_color board src in
-  find_destination_squares (flipfn side) jumps (is_valid_jump board) src
+  find_destinations_for_move (flipfn side) jumps (is_valid_jump board) src
+
+(* Find valid moves for a piece. *)
+let find_moves
+    (board : board_t)
+    (src : int) : int list =
+  let side = piece_color board src in
+  find_destinations_for_move (flipfn side) moves (is_valid_move board) src
+
+(* Does a piece have a jump available? *)
+let has_jump (board : board_t) (src : int) : bool = find_jumps board src != []
+
+(* Does a piece have a move available? *)
+let has_move (board : board_t) (src : int) : bool = find_moves board src != []
+
+(* Find all valid selectable squares (ie. sources of allowed moves for a side).
+   Jumps only if any jumps exist. *)
+let find_selectable_squares (board : board_t) (side : side_t) : int list =
+  let ps = pieces board side in
+  let jumpSquares = List.filter (fun x -> has_jump board x) ps in
+  if (jumpSquares != []) then jumpSquares
+  else List.filter (fun x -> has_move board x) ps
 
 (* Find valid destination squares for a piece.
    (Jumps if they exist, otherwise regular moves.) *)
@@ -167,8 +168,7 @@ let find_destinations
     (src : int) : int list =
   let possible_jumps = find_jumps board src in
   if (possible_jumps != []) then possible_jumps
-  else let side = piece_color board src in
-  find_destination_squares (flipfn side) moves (is_valid_move board) src
+  else find_moves board src
 
 (* Move a piece from src to dest. Capture if necessary.
    Return a new board and a list of squares to be redrawn. *)
@@ -184,10 +184,3 @@ let move_piece
   else
     (b2, [src; dest])
 
-(* Does a piece have a jump available? *)
-let has_jump
-    (board : board_t)
-    (src : int) : bool =
-  let side = piece_color board src in
-  let possible_jumps = find_destination_squares (flipfn side) jumps (is_valid_jump board) src in
-  possible_jumps != []
