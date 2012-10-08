@@ -1,16 +1,17 @@
 (* file: checkers.ml *)
+(* Compile with: ocamlc -I +lablgtk2 lablgtk.cma gtkInit.cmo board.ml checkers.ml -o checkers *)
 
 open Board
 
 (* Board colors. *)
-let darkSquareColor : GDraw.color = (`NAME "dim gray");;
-let lightSquareColor : GDraw.color = (`NAME "light gray");;
-let selectableColor : GDraw.color = (`NAME "yellow");;
-let selectedColor : GDraw.color = (`NAME "red");;
-let destinationColor : GDraw.color = (`NAME "green");;
+let darkSquareColor : GDraw.color = (`NAME "dim gray")
+let lightSquareColor : GDraw.color = (`NAME "light gray")
+let selectableColor : GDraw.color = (`NAME "yellow")
+let selectedColor : GDraw.color = (`NAME "red")
+let destinationColor : GDraw.color = (`NAME "green")
 
 (* Draw a piece at 80% of the square width. *)
-let pieceWidth : float = 0.8;;
+let pieceWidth : float = 0.8
 
 (* Board dimensions : x origin, yorigin, square width, square height. *)
 let board_dimensions (backing : GDraw.pixmap ref) : (int * int * int * int) =

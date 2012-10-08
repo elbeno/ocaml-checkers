@@ -1,10 +1,10 @@
 (* file: board.ml *)
 
 (* A square can contain a white piece, black piece, or neither. *)
-type side_t = White | Black | Neither;;
+type side_t = White | Black | Neither
 
 (* A board is two lists of pieces, the first black and the second white. *)
-type board_t = (int list * int list);;
+type board_t = (int list * int list)
 
 (* Get the pieces on the board by which color side we want. *)
 let pieces (board : board_t) (side : side_t) : int list =
@@ -30,9 +30,9 @@ let add_piece (board : board_t) (index : int) (side : side_t) : board_t =
     (fst board, new_side)
 
 (* Board constants. *)
-let numRows : int = 8;;
-let numColumns : int = 8;;
-let boardSize : int = numRows * numColumns;;
+let numRows : int = 8
+let numColumns : int = 8
+let boardSize : int = numRows * numColumns
 
 (* Board index to (x,y) coordinate. *)
 let index_to_xy (index : int) : (int * int) = (index mod numColumns, index / numColumns)
@@ -70,10 +70,6 @@ let identity (x : 'a) : 'a = x
 let flipfn (side : side_t) : int -> int =
   if (side = Black) then identity else flip_index
 
-(* Possible moves. *)
-let moves : (int, int list) Hashtbl.t = Hashtbl.create boardSize;;
-let jumps : (int, int list) Hashtbl.t = Hashtbl.create boardSize;;
-
 (* Single possible move from a square either left or right, or none. *)
 let possible_moves (left : bool) (index : int) : int list =
   let (x, y) = index_to_xy index in
@@ -92,37 +88,42 @@ let possible_jumps (left : bool) (index : int) : int list =
   else possible_moves left (List.hd captures)
 
 (* Compute possible moves from each square. *)
-let init_moves_aux (table : ('a, 'b list) Hashtbl.t) (fn : bool -> int -> 'b list) : unit =
+let init_moves_aux
+    (table : ('a, 'b list) Hashtbl.t)
+    (fn : bool -> int -> 'b list)
+    : ('a, 'b list) Hashtbl.t =
   for src = 0 to (boardSize - 1) do
+    let existing_moves =
+      try
+        Hashtbl.find table src
+      with Not_found -> [] in
     let dest = List.append (fn true src) (fn false src) in
-    Hashtbl.replace table src dest
-  done
+    Hashtbl.replace table src (List.append dest existing_moves)
+  done;
+  table
 
-(* Compute possible moves from each square. *)
-let init_moves : unit = init_moves_aux moves possible_moves
-let init_jumps : unit = init_moves_aux jumps possible_jumps
+(* Possible moves from each square. *)
+let moves : (int, int list) Hashtbl.t =
+  init_moves_aux
+    (init_moves_aux (Hashtbl.create boardSize) possible_moves)
+    possible_jumps
 
 (* Is a move a jump? *)
 let is_jump (src : int) (dest : int) : bool = abs(src - dest) > numColumns + 1
 
-(* Is a move valid? The destination must be empty. *)
-let is_valid_move (board : board_t) (_ : int) (dest : int) : bool =
-  let black_exists = List.exists (fun x -> x = dest) (pieces board Black) in
-  let white_exists = List.exists (fun x -> x = dest) (pieces board White) in
-  (not black_exists) && (not white_exists)
-
 (* Is a jump valid? The pieces at src and capture points must be opposite colors,
    and the destination must be empty. The capture point is halfway between src and dest. *)
 let is_valid_jump (board : board_t) (src : int) (dest : int) : bool =
-  let dest_empty = is_valid_move board src dest in
-  dest_empty && (
-  let src_side =
-    if List.exists (fun x -> x = src) (pieces board Black) then Black else White in
-  let capture = (src + dest) / 2 in
-  let capture_side =
-    if List.exists (fun x -> x = capture) (pieces board Black) then Black else
-    if List.exists (fun x -> x = capture) (pieces board White) then White else src_side in
-  src_side != capture_side)
+  let dest_empty = ((piece_color board dest) = Neither) in
+  let src_side = piece_color board src in
+  let capture_side = piece_color board ((src + dest) / 2) in
+  dest_empty && (capture_side != Neither) && (src_side != capture_side)
+
+(* Is a move valid? Either it's a valid jump, or the destination must be empty. *)
+let is_valid_move (board : board_t) (src : int) (dest : int) : bool =
+  if is_jump src dest
+  then is_valid_jump board src dest
+  else piece_color board dest = Neither
 
 (* Get the possible valid destination squares for a move or jump. *)
 let find_destinations_for_move
@@ -133,19 +134,18 @@ let find_destinations_for_move
   let flipped_moves = List.map flip (Hashtbl.find move_table (flip index)) in
   List.filter (valid_fn index) flipped_moves
 
-(* Find valid jumps for a piece. *)
-let find_jumps
-    (board : board_t)
-    (src : int) : int list =
-  let side = piece_color board src in
-  find_destinations_for_move (flipfn side) jumps (is_valid_jump board) src
-
 (* Find valid moves for a piece. *)
 let find_moves
     (board : board_t)
     (src : int) : int list =
   let side = piece_color board src in
   find_destinations_for_move (flipfn side) moves (is_valid_move board) src
+
+(* Find valid jumps for a piece. *)
+let find_jumps
+    (board : board_t)
+    (src : int) : int list =
+  List.filter (is_jump src) (find_moves board src)
 
 (* Does a piece have a jump available? *)
 let has_jump (board : board_t) (src : int) : bool = find_jumps board src != []
@@ -157,18 +157,19 @@ let has_move (board : board_t) (src : int) : bool = find_moves board src != []
    Jumps only if any jumps exist. *)
 let find_selectable_squares (board : board_t) (side : side_t) : int list =
   let ps = pieces board side in
-  let jumpSquares = List.filter (fun x -> has_jump board x) ps in
-  if (jumpSquares != []) then jumpSquares
-  else List.filter (fun x -> has_move board x) ps
+  let js = List.filter (has_jump board) ps in
+  if (js != []) then js
+  else List.filter (has_move board) ps
 
 (* Find valid destination squares for a piece.
    (Jumps if they exist, otherwise regular moves.) *)
 let find_destinations
     (board : board_t)
     (src : int) : int list =
-  let possible_jumps = find_jumps board src in
+  let m = find_moves board src in
+  let possible_jumps = List.filter (is_jump src) m in
   if (possible_jumps != []) then possible_jumps
-  else find_moves board src
+  else m
 
 (* Move a piece from src to dest. Capture if necessary.
    Return a new board and a list of squares to be redrawn. *)
