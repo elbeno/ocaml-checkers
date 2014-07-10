@@ -4,3 +4,4 @@
 *.cmx
 checkers
 .sconsign.dblite
+*.pyc
